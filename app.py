@@ -9,7 +9,7 @@ from PIL import Image
 import pytesseract
 from groq import Groq
 
-# --- 1. SECURITY & PATH FIX ---
+# --- 1. SETUP ---
 load_dotenv()
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
 
@@ -18,124 +18,93 @@ if platform.system() == "Windows":
 
 client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# --- 2. LOGIC: Smart Extraction (PDF, Word, Images) ---
-@st.cache_data(show_spinner=False)
-def get_text_from_files(file_list):
-    all_text = ""
-    for file in file_list:
-        try:
-            # A. Agar PDF file hai
-            if file.name.endswith(".pdf"):
-                pdf_reader = PdfReader(file)
-                for page in pdf_reader.pages:
-                    all_text += page.extract_text() + "\n"
-            
-            # B. Agar Word file evidence mein di hai
-            elif file.name.endswith(".docx"):
-                doc = Document(file)
-                for para in doc.paragraphs:
-                    all_text += para.text + "\n"
-            
-            # C. Agar Screenshots/Images hain (OCR)
-            elif file.type in ["image/png", "image/jpeg", "image/jpg"]:
-                img = Image.open(file)
-                ocr_text = pytesseract.image_to_string(img)
-                all_text += f"\n[Screenshot Content: {file.name}]\n{ocr_text}\n"
-                
-        except Exception as e:
-            st.error(f"Error reading {file.name}: {e}")
-    return all_text
+# --- 2. SMART EXTRACTION ---
+def extract_text(file):
+    """Template ya Evidence se text nikalne ke liye"""
+    if file.name.lower().endswith(".pdf"):
+        reader = PdfReader(file)
+        return "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+    elif file.name.lower().endswith(".docx"):
+        doc = Document(file)
+        return "\n".join([p.text for p in doc.paragraphs])
+    else: # Images/Screenshots
+        img = Image.open(file)
+        return pytesseract.image_to_string(img)
 
-def process_with_ai_batched(prompt_text, api_key_to_use):
-    temp_client = Groq(api_key=api_key_to_use)
+def generate_smart_report(template_style, evidence_content, api_key):
+    """AI logic: Style matching + Analysis"""
+    temp_client = Groq(api_key=api_key)
+    
+    # AI ko sakht instruction ke template ka style copy kare
+    prompt = f"""
+    TASK: Generate a professional Cyber Security Pentest Report.
+    
+    1. STYLE REFERENCE (Follow this template's tone and structure):
+    {template_style[:1000]} 
+    
+    2. EVIDENCE DATA (Analyze these screenshots/files):
+    {evidence_content}
+    
+    INSTRUCTIONS:
+    - Identify vulnerabilities from the evidence.
+    - Write summaries, risk levels (High/Med/Low), and technical suggestions.
+    - Match the 'tarteeb' and professional language of the template.
+    - Output only the report content.
+    """
+    
     try:
-        # AI ko mazeed behtar hidayat di hain taake report ki tarteeb kharab na ho
-        system_msg = (
-            "You are an Elite Cyber Security Analyst. Your task is to analyze the provided screenshots, "
-            "PDF data, and logs. Extract critical vulnerabilities (OWASP Top 10 focus). "
-            "Keep the tone professional and maintain the technical structure of a standard pentest report. "
-            "Do not add conversational filler. Provide only the findings."
-        )
-        
         response = temp_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": f"Analyze this evidence and provide detailed findings: \n{prompt_text}"}
-            ],
-            temperature=0.1
+            messages=[{"role": "system", "content": "You are an expert Pentester. Format your response exactly like the provided template style."},
+                      {"role": "user", "content": prompt}],
+            temperature=0.2
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"AI Analysis Failed: {str(e)}"
+        return f"Analysis Failed: {e}"
 
-def fill_template(template_file, findings):
-    doc = Document(template_file)
-    # Ye step aapke template ki settings aur format ko barqarar rakhta hai
-    for p in doc.paragraphs:
-        if "{{RESULT}}" in p.text:
-            p.text = p.text.replace("{{RESULT}}", findings)
-    
-    buffer = io.BytesIO()
-    doc.save(buffer)
-    buffer.seek(0)
-    return buffer
+# --- 3. UI ---
+st.set_page_config(page_title="AI Report Architect", layout="wide")
+st.title("🛡️ CyberReport AI: Smart Template Matcher")
 
-# --- 3. UI SETUP ---
-st.set_page_config(page_title="CyberReport AI Pro", page_icon="🛡️", layout="wide")
-
-st.title("🛡️ Cyber Pentest Report AI (Pro)")
-st.markdown("Automate your reporting by analyzing Screenshots, PDFs, and Docs.")
-
-with st.sidebar:
-    st.header("⚙️ Configuration")
-    user_api_key = st.text_input("Enter Groq API Key", type="password", value=GROQ_API_KEY if GROQ_API_KEY else "")
-    st.divider()
-    st.markdown("### How to use:")
-    st.write("1. Upload your format in **Template**.")
-    st.write("2. Upload all findings in **Evidence**.")
-    st.write("3. AI will auto-map everything.")
-
-# Columns update for better file handling
 col1, col2 = st.columns(2)
+
 with col1:
-    st.subheader("📄 Report Template")
-    # Yahan sirf Word Template allow hai kyunke report wahan likhni hai
-    template_file = st.file_uploader("Upload Word Template (.docx)", type=["docx"], key="tpl")
+    st.subheader("📋 1. Upload Template Style")
+    template_input = st.file_uploader("Upload Sample (PDF/Word)", type=["pdf", "docx"])
 
 with col2:
-    st.subheader("📸 Evidence & Data")
-    # Yahan sab allow hai: PDF, Images aur purani Word Reports
-    evidence_files = st.file_uploader("Upload Evidence (PDF, Images, Docx)", 
-                                     type=["pdf", "png", "jpg", "jpeg", "docx"], 
-                                     accept_multiple_files=True, key="evd")
+    st.subheader("📸 2. Upload Evidence")
+    evidence_inputs = st.file_uploader("Upload Screenshots/Logs", type=["png", "jpg", "jpeg", "pdf", "docx"], accept_multiple_files=True)
 
 # --- 4. EXECUTION ---
-if st.button("🚀 Analyze Evidence & Generate Report"):
-    if template_file and evidence_files and user_api_key:
-        with st.spinner("Extracting data from files and screenshots..."):
-            # Step A: Sab files se text nikalna
-            full_data = get_text_from_files(evidence_files)
+if st.button("🚀 Analyze & Generate Report"):
+    if template_input and evidence_inputs and GROQ_API_KEY:
+        with st.spinner("AI is studying your template and analyzing evidence..."):
             
-            if full_data.strip() == "":
-                st.error("No text could be extracted from the uploaded files.")
-            else:
-                # Step B: AI Analysis
-                ai_findings = process_with_ai_batched(full_data, user_api_key)
-                
-                # Step C: Template Filling
-                final_report = fill_template(template_file, ai_findings)
-                
-                st.success("✅ Report Prepared Successfully!")
-                
-                st.download_button(
-                    label="📥 Download Professional Report",
-                    data=final_report,
-                    file_name="Final_Pentest_Report.docx",
-                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                )
-                
-                with st.expander("Review AI Analysis Results"):
-                    st.markdown(ai_findings)
+            # Step A: Template ka style samjhna
+            style_guide = extract_text(template_input)
+            
+            # Step B: Saare screenshots/files ko analyze karna
+            evidence_data = ""
+            for f in evidence_inputs:
+                evidence_data += f"\n--- File: {f.name} ---\n" + extract_text(f)
+            
+            # Step C: AI Report Generation
+            final_content = generate_smart_report(style_guide, evidence_data, GROQ_API_KEY)
+            
+            st.success("✅ Analysis Complete!")
+            st.markdown(final_content) # Preview
+            
+            # Step D: Export as Word (Default for editing)
+            new_doc = Document()
+            new_doc.add_paragraph(final_content)
+            doc_io = io.BytesIO()
+            new_doc.save(doc_io)
+            doc_io.seek(0)
+            
+            st.download_button(label="📥 Download as Word (.docx)", 
+                               data=doc_io, 
+                               file_name="AI_Generated_Report.docx")
     else:
-        st.warning("Please upload the Template, Evidence, and provide an API Key.")
+        st.error("Please provide both Template and Evidence.")
