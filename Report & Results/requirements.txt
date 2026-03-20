@@ -1,6 +1,0 @@
-PyPDF2
-python-docx
-pytesseract
-Pillow
-groq
-python-dotenv
