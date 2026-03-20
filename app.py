@@ -11,48 +11,57 @@ from groq import Groq
 
 # --- 1. SECURITY & PATH FIX ---
 load_dotenv()
-# Streamlit Cloud ke Secrets se key uthayega, agar wahan na ho to .env se
 GROQ_API_KEY = st.secrets.get("GROQ_API_KEY") or os.getenv("GROQ_API_KEY")
 
-# Tesseract Path Fix (Automated)
 if platform.system() == "Windows":
-    # Agar aap apne laptop par chala rahi hain
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-else:
-    # Linux/Cloud par path dene ki zaroorat nahi hoti, bas command chalti hai
-    pass
 
-# Initialize Groq Client
 client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# --- 2. LOGIC: Caching & OCR ---
+# --- 2. LOGIC: Smart Extraction (PDF, Word, Images) ---
 @st.cache_data(show_spinner=False)
 def get_text_from_files(file_list):
     all_text = ""
     for file in file_list:
         try:
-            if file.type == "application/pdf":
+            # A. Agar PDF file hai
+            if file.name.endswith(".pdf"):
                 pdf_reader = PdfReader(file)
                 for page in pdf_reader.pages:
                     all_text += page.extract_text() + "\n"
-            else:
+            
+            # B. Agar Word file evidence mein di hai
+            elif file.name.endswith(".docx"):
+                doc = Document(file)
+                for para in doc.paragraphs:
+                    all_text += para.text + "\n"
+            
+            # C. Agar Screenshots/Images hain (OCR)
+            elif file.type in ["image/png", "image/jpeg", "image/jpg"]:
                 img = Image.open(file)
-                # Image ko scan kar raha hai
                 ocr_text = pytesseract.image_to_string(img)
-                all_text += f"\n[Evidence: {file.name}]\n{ocr_text}\n"
+                all_text += f"\n[Screenshot Content: {file.name}]\n{ocr_text}\n"
+                
         except Exception as e:
             st.error(f"Error reading {file.name}: {e}")
     return all_text
 
 def process_with_ai_batched(prompt_text, api_key_to_use):
-    # Dynamic client for users who enter key manually
     temp_client = Groq(api_key=api_key_to_use)
     try:
+        # AI ko mazeed behtar hidayat di hain taake report ki tarteeb kharab na ho
+        system_msg = (
+            "You are an Elite Cyber Security Analyst. Your task is to analyze the provided screenshots, "
+            "PDF data, and logs. Extract critical vulnerabilities (OWASP Top 10 focus). "
+            "Keep the tone professional and maintain the technical structure of a standard pentest report. "
+            "Do not add conversational filler. Provide only the findings."
+        )
+        
         response = temp_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "You are a Cyber Security Expert. Summarize evidence into professional pentest findings (OWASP focus)."},
-                {"role": "user", "content": prompt_text}
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": f"Analyze this evidence and provide detailed findings: \n{prompt_text}"}
             ],
             temperature=0.1
         )
@@ -62,62 +71,71 @@ def process_with_ai_batched(prompt_text, api_key_to_use):
 
 def fill_template(template_file, findings):
     doc = Document(template_file)
-    # Template mein {{RESULT}} ko findings se badal dega
+    # Ye step aapke template ki settings aur format ko barqarar rakhta hai
     for p in doc.paragraphs:
         if "{{RESULT}}" in p.text:
             p.text = p.text.replace("{{RESULT}}", findings)
     
-    # Save to memory buffer
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
     return buffer
 
-# --- 3. UI SETUP (Minimalist & Stable) ---
-st.set_page_config(page_title="CyberReport AI Pro", page_icon="🛡️")
+# --- 3. UI SETUP ---
+st.set_page_config(page_title="CyberReport AI Pro", page_icon="🛡️", layout="wide")
 
 st.title("🛡️ Cyber Pentest Report AI (Pro)")
-st.markdown("---")
+st.markdown("Automate your reporting by analyzing Screenshots, PDFs, and Docs.")
 
-# Sidebar for Key
 with st.sidebar:
     st.header("⚙️ Configuration")
     user_api_key = st.text_input("Enter Groq API Key", type="password", value=GROQ_API_KEY if GROQ_API_KEY else "")
-    st.info("Note: Your template must contain the tag: **{{RESULT}}**")
+    st.divider()
+    st.markdown("### How to use:")
+    st.write("1. Upload your format in **Template**.")
+    st.write("2. Upload all findings in **Evidence**.")
+    st.write("3. AI will auto-map everything.")
 
-# Layout Columns
+# Columns update for better file handling
 col1, col2 = st.columns(2)
 with col1:
-    st.subheader("📄 Template")
-    template_file = st.file_uploader("Upload .docx", type=["docx"])
+    st.subheader("📄 Report Template")
+    # Yahan sirf Word Template allow hai kyunke report wahan likhni hai
+    template_file = st.file_uploader("Upload Word Template (.docx)", type=["docx"], key="tpl")
+
 with col2:
-    st.subheader("📸 Evidence")
-    evidence_files = st.file_uploader("Upload PDF/Images", type=["pdf", "png", "jpg"], accept_multiple_files=True)
+    st.subheader("📸 Evidence & Data")
+    # Yahan sab allow hai: PDF, Images aur purani Word Reports
+    evidence_files = st.file_uploader("Upload Evidence (PDF, Images, Docx)", 
+                                     type=["pdf", "png", "jpg", "jpeg", "docx"], 
+                                     accept_multiple_files=True, key="evd")
 
 # --- 4. EXECUTION ---
-if st.button("🚀 Generate Professional Report"):
+if st.button("🚀 Analyze Evidence & Generate Report"):
     if template_file and evidence_files and user_api_key:
-        with st.spinner("Processing Evidence & AI Analysis..."):
-            # Step A: Data Extraction
+        with st.spinner("Extracting data from files and screenshots..."):
+            # Step A: Sab files se text nikalna
             full_data = get_text_from_files(evidence_files)
             
-            # Step B: AI Logic
-            ai_findings = process_with_ai_batched(full_data, user_api_key)
-            
-            # Step C: Template Mapping
-            final_report = fill_template(template_file, ai_findings)
-            
-            st.success("✅ Report Generated!")
-            
-            # Download Button
-            st.download_button(
-                label="📥 Download Final Report",
-                data=final_report,
-                file_name="AI_Pentest_Report.docx",
-                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            )
-            
-            with st.expander("Preview Findings"):
-                st.write(ai_findings)
+            if full_data.strip() == "":
+                st.error("No text could be extracted from the uploaded files.")
+            else:
+                # Step B: AI Analysis
+                ai_findings = process_with_ai_batched(full_data, user_api_key)
+                
+                # Step C: Template Filling
+                final_report = fill_template(template_file, ai_findings)
+                
+                st.success("✅ Report Prepared Successfully!")
+                
+                st.download_button(
+                    label="📥 Download Professional Report",
+                    data=final_report,
+                    file_name="Final_Pentest_Report.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+                
+                with st.expander("Review AI Analysis Results"):
+                    st.markdown(ai_findings)
     else:
-        st.warning("Please ensure Template, Evidence, and API Key are provided.")
+        st.warning("Please upload the Template, Evidence, and provide an API Key.")
